@@ -8,7 +8,6 @@ class Socket:
     """Documentation for Socket
 
     """
-
     def __init__(self, url, hub, session, negotiator_data, loop, extra_params,
                  is_safe):
         if is_safe:
@@ -33,8 +32,6 @@ class Socket:
         return self.websocket.open()
 
     async def __aenter__(self):
-        # print(self.url)
-        # print('******************************')
         params = {
             'transport': 'webSockets',
             'connectionToken': self.data['ConnectionToken'],
@@ -43,10 +40,6 @@ class Socket:
         }
         params.update(self.extra_params)
         self.url += '?' + urlencode(params)
-        # print(self.url)
-        # print('******************************')
-        # print(self.session.cookies)
-        # print(self.session.headers)
         self._conn = websockets.connect(self.url,
                                         extra_headers=self.session.headers,
                                         loop=self.loop)

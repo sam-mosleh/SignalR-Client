@@ -5,8 +5,6 @@ import time
 from concurrent.futures import TimeoutError as GetTimeoutError
 import threading
 import requests
-# from Queue import Queue
-# from SignalR.EventHook import EventHook
 from SignalR.Negotiator import Negotiator
 from SignalR.Socket import Socket
 
@@ -27,11 +25,7 @@ class SignalRClient:
                                       is_safe)
         self._initialize_loop_and_queue()
         self._initialize_logger()
-        self.can_listen = True
-        self.can_initialize = False
-        self.can_invoke = False
-        self.break_flag = False
-        # self.receivers = EventHook()
+        self._set_controlling_booleans()
         self._invoked = 0
         self.messages = []
         self.extra_params = extra_params
@@ -52,19 +46,25 @@ class SignalRClient:
             self.logger.addHandler(ch)
         self.logger.setLevel(logging.ERROR)
 
-    def create_connection(self):
-        asyncio.ensure_future(self._start_connection(), loop=self.loop)
+    def _set_controlling_booleans(self):
+        self.can_listen = True
+        self.can_initialize = False
+        self.can_invoke = False
+        self.break_flag = False
 
-    async def _start_connection(self):
+    def _add_socket_connection_to_loop(self):
+        asyncio.ensure_future(self._create_socket_connection(), loop=self.loop)
+
+    async def _create_socket_connection(self):
         async with Socket(self.url, self.hub, self.session,
                           self.negotiatior.data, self.loop, self.extra_params,
                           self.is_safe) as self.socket:
-            await self._start_async_loop()
+            self.logger.debug('<Socket Created>')
+            await self._add_handlers_to_async_loop()
         self.logger.debug('<Connection Stopped>')
-        # await self.post_loop_ending_function()
         self.loop.stop()
 
-    async def _start_async_loop(self):
+    async def _add_handlers_to_async_loop(self):
         handled_listener = self.handle_exception(self._listener())
         listener_task = asyncio.ensure_future(handled_listener, loop=self.loop)
 
@@ -78,11 +78,12 @@ class SignalRClient:
         handled_quitter = self.handle_exception(self._quitter())
         quitter_task = asyncio.ensure_future(handled_quitter, loop=self.loop)
 
+        self.logger.debug('<All Handlers has been Created>')
         done, pending = await asyncio.wait(
             [listener_task, initializer_task, invoker_task, quitter_task],
             loop=self.loop,
             return_when=asyncio.FIRST_EXCEPTION)
-
+        self.logger.debug('<Handlers tasks are done>')
         for task in pending:
             task.cancel()
 
@@ -216,8 +217,8 @@ class SignalRClient:
     def run(self):
         self.loop.run_forever()
 
-    def create_and_run(self):
-        self.create_connection()
+    def add_connection_and_run(self):
+        self._add_socket_connection_to_loop()
         self.run()
 
     def call_method(self, method_name, arguments):
@@ -239,28 +240,10 @@ class SignalRClient:
         self._stop()
 
     def _start(self):
-        self.thread = threading.Thread(target=self.create_and_run)
+        self.thread = threading.Thread(target=self.add_connection_and_run)
         self.thread.daemon = True
         self.thread.start()
 
     def _stop(self):
         self._add_to_invoke_queue({'break_flag': True})
         self.thread.join()
-
-
-# class SingleCommandClient(SignalRClient):
-#     """Documentation for SingleCommandClient
-
-#     """
-#     def can_quit(self):
-#         for message in reversed(self.messages):
-#             if 'R' in message:
-#                 return True
-#         return False
-
-#     def post_invoke_waiting(self, message_index):
-#         return None
-
-#     async def post_loop_ending_function(self):
-#         for key, val in self._buffered_messages.items():
-#             await self.receivers.async_trigger_hooks(val)
