@@ -8,6 +8,7 @@ class Socket:
     """Documentation for Socket
 
     """
+
     def __init__(self, url, hub, session, negotiator_data, loop, extra_params,
                  is_safe):
         if is_safe:
@@ -30,6 +31,9 @@ class Socket:
     @property
     def still_open(self):
         return self.websocket.open()
+
+    def wait_synchronously_if_not_closed(self):
+        pass
 
     async def __aenter__(self):
         params = {
