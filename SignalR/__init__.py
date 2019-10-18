@@ -1,3 +1,3 @@
-from SignalR.SignalRClient import SignalRClient
+from .SignalRClient import SignalRClient
 
 __all__ = ['SignalRClient']

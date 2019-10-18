@@ -3,11 +3,12 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
-import requests
-
-from SignalR.Negotiator import Negotiator
-from SignalR.Socket import Socket
+from .Connection import Connection
+from .ConnectionData import ConnectionData
+from .Negotiator import Negotiator
+from .Socket import Socket
 
 
 class SignalRClient:
@@ -15,16 +16,17 @@ class SignalRClient:
 
     """
 
-    def __init__(self, url, hub, extra_params={}, is_safe=True):
-        self.url = url
+    def __init__(self,
+                 url,
+                 hub,
+                 extra_params={},
+                 is_safe=True,
+                 thread_pool_size=32):
+        self.connection_data = ConnectionData(url, hub, extra_params, is_safe)
+        self.connection = Connection()
+
         self.hub = hub
-        self.extra_params = extra_params
-        self.is_safe = is_safe
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent':
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'
-        })
+
         self._initialize_loop_and_queue()
         self._initialize_logger()
         self._invoked = 0
@@ -32,8 +34,7 @@ class SignalRClient:
         self._buffered_messages = {}
         self._all_methods = {}
         self.break_flag = False
-        self.negotiator = Negotiator(self.url, self.hub, self.session,
-                                     self.extra_params, self.is_safe)
+        self.calling_thread_pool = ThreadPoolExecutor(thread_pool_size)
 
     def _initialize_loop_and_queue(self):
         self.loop = asyncio.new_event_loop()
@@ -49,13 +50,17 @@ class SignalRClient:
         self.logger.setLevel(logging.ERROR)
 
     async def _create_socket_and_start_conversation(self):
-        async with Socket(self.url, self.hub, self.session,
-                          self.negotiator.data, self.loop, self.extra_params,
-                          self.is_safe) as self.socket:
-            self.logger.debug('<Socket Created>')
+        self.logger.debug('<Negotiating Started>')
+        self.negotiator = Negotiator(self.connection,
+                                     self.connection_data).negotiate()
+        self.logger.debug('<Negotiating Done>')
+        self.connection_data.set_negotiating_data(self.negotiator.data)
+        async with Socket(self.connection, self.connection_data,
+                          self.loop) as self.socket:
+            self.logger.debug('<Socket Connection Created>')
             self.initialize_conversation()
             await self._add_handlers_to_async_loop()
-        self.logger.debug('<Connection Stopped>')
+        self.logger.debug('<Socket Connection Stopped>')
 
     async def _add_handlers_to_async_loop(self):
         listener_task = self.create_task_from(self._listener())
@@ -95,25 +100,26 @@ class SignalRClient:
         self.logger.debug('<Listening Ended>')
 
     def process_message(self, message):
-        # self.logger.debug('Im {} Listening'.format(self))
         data = json.loads(message)
         if 'R' in data:
             self.messages.append(data)
-            self.logger.debug('<Response>')
-            self.logger.info(data)
-            self.logger.debug('<End Response>')
+            self.logger.info('Reponse={}'.format(data))
             self._buffered_messages[int(data['I'])] = data['R']
+            # if data['R']:
+            #     self._buffered_messages[int(data['I'])] = data['R']
+            # else:
+            #     self._buffered_messages[int(data['I'])] = 'Nothing'
         elif 'M' in data and data['M']:
-            self.logger.debug('<Message>')
             for dict_data in data['M']:
                 if dict_data['H'] == self.hub:
                     self.call_method(dict_data['M'], dict_data['A'])
                 else:
                     self.logger.warning(dict_data)
-                self.logger.debug('<End Message>')
+        elif 'E' in data:
+            self.logger.error(data['E'])
         else:
             self.logger.debug('<Unknown Data>')
-            # self.logger.debug(data)
+            self.logger.debug(data)
 
     async def _invoker(self):
         while True:
@@ -126,7 +132,7 @@ class SignalRClient:
             except asyncio.TimeoutError:
                 top = None
             if top:
-                self.process_invoke_message(top)
+                await self.process_invoke_message(top)
         self.logger.debug('<Invoking Ended>')
 
     async def process_invoke_message(self, message):
@@ -139,13 +145,12 @@ class SignalRClient:
             self.logger.debug('<Sent>')
             self.invoke_queue.task_done()
 
-    def invoke(self, method, data=[]):
-        # self.generate_message()
+    def invoke(self, method, *args):
         message_index = self._invoked
         data_to_send = {
             'H': self.hub,
             'M': method,
-            'A': data,
+            'A': args,
             'I': message_index
         }
         self._buffered_messages[message_index] = []
@@ -159,38 +164,19 @@ class SignalRClient:
     def post_invoke_waiting(self, message_index):
         while not self._buffered_messages[message_index]:
             time.sleep(0.001)
-        return self._buffered_messages.pop(message_index, None)
+        response = self._buffered_messages.pop(message_index, None)
+        # if response == 'Nothing':
+        if not response:
+            self.logger.debug('<Empty Response>')
+            return None
+        return response
 
     def initialize_conversation(self):
-        url = SignalRClient.get_initialize_url(self.url, self.is_safe)
-        params = SignalRClient.make_initialize_conversation_params(
-            self.hub, self.negotiator, self.extra_params)
-        response = self.session.get(url, params=params)
+        url = self.connection_data.initialize_url
+        params = self.connection_data.websocket_params
+        response = self.connection.get(url, params=params)
         self.logger.debug('Conversation started with result of {}'.format(
             response.json()))
-
-    @staticmethod
-    def get_initialize_url(url, is_safe):
-        if is_safe:
-            return 'https://' + url + '/start'
-        else:
-            return 'http://' + url + '/start'
-
-    @staticmethod
-    def make_initialize_conversation_params(hub_name,
-                                            negotiator,
-                                            extra_params={},
-                                            client_protocol_version=1.5):
-        params = {
-            'transport': 'webSockets',
-            'connectionToken': negotiator.data['ConnectionToken'],
-            'connectionData': json.dumps([{
-                'name': hub_name
-            }]),
-            'clientProtocol': client_protocol_version,
-        }
-        params.update(extra_params)
-        return params
 
     def run(self):
         self.loop.run_until_complete(
@@ -198,7 +184,8 @@ class SignalRClient:
 
     def call_method(self, method_name, arguments):
         if method_name in self._all_methods:
-            self._all_methods[method_name](arguments)
+            self.calling_thread_pool.submit(self._all_methods[method_name],
+                                            *arguments)
         else:
             self.logger.warning(
                 '{} method was not found! you should set it...'.format(
