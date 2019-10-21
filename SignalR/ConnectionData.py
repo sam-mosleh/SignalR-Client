@@ -9,16 +9,16 @@ class ConnectionData:
 
     def __init__(self,
                  url,
-                 hub,
+                 hubs,
                  extra_params,
                  is_safe,
                  client_protocol_version=1.5):
         self.url = url
-        self.hub = hub
+        # self.hubs = hubs
         self.extra_params = extra_params
         self.is_safe = is_safe
         self.client_protocol_version = client_protocol_version
-        self.hub_connection_data = json.dumps([{'name': hub}])
+        self.hub_connection_data = json.dumps([{'name': hub} for hub in hubs])
         self.conection_token = ''
 
     @property
