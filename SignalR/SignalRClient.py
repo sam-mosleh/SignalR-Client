@@ -35,6 +35,7 @@ class SignalRHub:
         self.logger.setLevel(logging.ERROR)
 
     def call_method(self, method_name, arguments):
+        self.logger.info('Calling {}'.format(method_name))
         if method_name in self._all_methods:
             self.calling_thread_pool.submit(self._all_methods[method_name],
                                             *arguments)
@@ -49,7 +50,6 @@ class SignalRHub:
     def invoke(self, method, *args):
         data_to_send, message_index = self.message_handler.create_invoke_message_from(
             self.hub_name, method, args)
-
         self.queue_adder(data_to_send)
         return self.post_invoke_waiting(message_index)
 
@@ -208,10 +208,13 @@ class SignalRClient:
 
     def process_message(self, message):
         data = json.loads(message)
-        if 'R' in data:
+        if 'I' in data:
             self.messages.append(data)
-            self.logger.info('Reponse={}'.format(data))
-            self.message_handler.set(int(data['I']), data['R'])
+            self.logger.debug('Reponse={}'.format(data))
+            if 'R' in data:
+                self.message_handler.set(int(data['I']), data['R'])
+            else:
+                self.message_handler.set(int(data['I']), [])
         elif 'M' in data and data['M']:
             for dict_data in data['M']:
                 if dict_data['H'] in self.hubs:
